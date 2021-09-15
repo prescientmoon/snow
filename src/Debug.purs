@@ -4,7 +4,6 @@ import Prelude
 
 import Data.Debug (class Debug, debug, prettyPrintWith)
 import Data.Maybe (Maybe(..))
-import Debug.Trace (class DebugWarning)
 import Effect (Effect)
 import Effect.Console as Console
 import Effect.Unsafe (unsafePerformEffect)
@@ -19,5 +18,5 @@ myDebug :: forall d. Debug d => d -> Effect Unit
 myDebug = Console.log <<< showPretty
 
 -- | Similar to spy but requires a debug instance.
-debugSpy :: forall a. Debug a => DebugWarning => a -> a
+debugSpy :: forall a. Debug a => a -> a
 debugSpy a = unsafePerformEffect (a <$ myDebug a)
