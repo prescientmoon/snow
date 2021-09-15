@@ -2,7 +2,7 @@ module Snow.Repl where
 
 import Prelude
 
-import Context (infer_, subtype_)
+import Context (infer, runCheckMWithConsole)
 import Data.Either (Either(..))
 import Data.Tuple.Nested ((/\))
 import Effect (Effect)
@@ -13,6 +13,7 @@ import Node.ReadLine.Aff (Interface, prompt)
 import Parser (parseCommand)
 import Snow.Debug (showPretty)
 import Snow.Repl.Types (Command(..))
+import Snow.Run.Logger (LogLevel(..))
 import Snow.Type (printType)
 import Text.Parsing.Parser (parseErrorMessage)
 
@@ -22,14 +23,14 @@ type ReplState =
 -- | Interpreting of commaneds
 interpret :: Command -> Effect Unit
 interpret (TypeOf expression) = do
-  log $ printType type_
-  log $ showPretty context
-  where
-  context /\ type_ = infer_ expression
+  runCheckMWithConsole Debug
+    ( \(context /\ type_) -> do
+        log $ printType type_
+        log $ showPretty context
+    )
+    (infer [] expression)
 interpret (Subsumes a b) = do
-  log $ showPretty context
-  where
-  context = subtype_ a b
+  log "Unimplemented"
 
 loop :: ReplState -> Aff Unit
 loop state = do

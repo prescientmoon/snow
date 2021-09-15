@@ -22,6 +22,7 @@
   , "run-supply"
   , "strings"
   , "tuples"
+  , "typelevel-prelude"
   , "undefined"
   ]
 , packages = ./packages.dhall

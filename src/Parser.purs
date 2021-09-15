@@ -17,6 +17,7 @@ import Text.Parsing.Parser.Combinators (many1, try)
 import Text.Parsing.Parser.String (class StringLike, oneOf)
 import Text.Parsing.Parser.Token (GenLanguageDef(..), GenTokenParser, LanguageDef, alphaNum, letter, makeTokenParser)
 import Undefined (undefined)
+import Data.Tuple.Nested ((/\))
 
 opChars :: forall s m. StringLike s => Monad m => ParserT s m Char
 opChars = oneOf [ ':', '!', '#', '$', '%', '&', '*', '+', '.', '/', '<', '=', '>', '?', '@', '\\', '^', '|', '-', '~' ]
@@ -71,15 +72,24 @@ parseType' type' = (try function) <|> nonFunction
   { parens, identifier, reserved, reservedOp } = tokenParser
 
   typeVar = Universal <$> identifier
-  nonFunction = parens type' <|> unit <|> parseForall <|> typeVar
+  nonFunction = parens type' <|> unit <|> parseForall <|> parseExists <|> typeVar
   unit = Unit <$ reserved "Unit"
 
-  parseForall = do
-    reserved "forall"
-    var <- identifier
+  parseBinder = do
+    vars <- many1 identifier
     reservedOp "."
     ty <- type'
-    pure $ Forall var ty
+    pure $ vars /\ ty
+
+  parseForall = ado
+    reserved "forall"
+    vars /\ innerType <- parseBinder
+    in foldr Forall innerType vars
+
+  parseExists = ado
+    reserved "exists"
+    vars /\ innerType <- parseBinder
+    in foldr Exists innerType vars
 
   function = do
     from <- nonFunction
