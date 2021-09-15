@@ -1,5 +1,5 @@
 let upstream =
-      https://github.com/purescript/package-sets/releases/download/psc-0.13.8-20210118/packages.dhall sha256:a59c5c93a68d5d066f3815a89f398bcf00e130a51cb185b2da29b20e2d8ae115
+      https://github.com/purescript/package-sets/releases/download/psc-0.14.3-20210825/packages.dhall sha256:eee0765aa98e0da8fc414768870ad588e7cada060f9f7c23c37385c169f74d9f
 
 let additions =
       { debugged =
@@ -15,14 +15,13 @@ let additions =
           , "bifunctors"
           , "record"
           , "effect"
-          , "generics-rep"
           , "datetime"
           , "enums"
           , "unordered-collections"
           ]
-        , repo = "https://github.com/hdgarrood/purescript-debugged"
+        , repo = "https://github.com/Mateiadrielrafael/purescript-debugged"
         , version = "master"
         }
       }
 
-in  additions ⫽ upstream
+in  additions // upstream
