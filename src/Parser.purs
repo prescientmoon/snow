@@ -8,16 +8,16 @@ import Data.Either (Either, fromRight)
 import Data.Foldable (foldl, foldr)
 import Data.Identity (Identity)
 import Data.List.NonEmpty as NonEmptyList
-import Data.Maybe (maybe, optional)
+import Data.Maybe (Maybe(..), maybe, optional)
+import Data.Tuple.Nested ((/\))
 import Snow.Ast (Expr(..))
 import Snow.Repl.Types (Command(..))
 import Snow.Type (SnowType(..))
 import Text.Parsing.Parser (ParseError, Parser, ParserT, fail, runParser)
-import Text.Parsing.Parser.Combinators (many1, try)
+import Text.Parsing.Parser.Combinators (many1)
 import Text.Parsing.Parser.String (class StringLike, oneOf)
 import Text.Parsing.Parser.Token (GenLanguageDef(..), GenTokenParser, LanguageDef, alphaNum, letter, makeTokenParser)
 import Undefined (undefined)
-import Data.Tuple.Nested ((/\))
 
 opChars :: forall s m. StringLike s => Monad m => ParserT s m Char
 opChars = oneOf [ ':', '!', '#', '$', '%', '&', '*', '+', '.', '/', '<', '=', '>', '?', '@', '\\', '^', '|', '-', '~' ]
@@ -67,7 +67,7 @@ parseExpression' expr = parseAnnotation
     in foldr ExprLambda body arguments
 
 parseType' :: Parser String SnowType -> Parser String SnowType
-parseType' type' = (try function) <|> nonFunction
+parseType' type' = tryFunction
   where
   { parens, identifier, reserved, reservedOp } = tokenParser
 
@@ -91,11 +91,13 @@ parseType' type' = (try function) <|> nonFunction
     vars /\ innerType <- parseBinder
     in foldr Exists innerType vars
 
-  function = do
+  tryFunction = ado
     from <- nonFunction
-    reservedOp "->"
-    to <- type'
-    pure $ Function from to
+    to <- optional (reservedOp "->" *> type')
+    in
+      case to of
+        Just to -> Function from to
+        Nothing -> from
 
 -- | Complete parsers
 typeParser :: Parser String SnowType
@@ -110,6 +112,7 @@ commandParser = reservedOp ":" *> do
   case command of
     "t" -> TypeOf <$> expressionParser
     "s" -> Subsumes <$> parens typeParser <*> typeParser
+    "assume" -> Assume <$> identifier <*> typeParser
     other -> fail $ "Unknown command " <> other
   where
   { identifier, reservedOp, parens } = tokenParser

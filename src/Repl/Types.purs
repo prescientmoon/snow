@@ -6,4 +6,5 @@ import Snow.Type (SnowType)
 data Command
   = TypeOf Expr
   | Subsumes SnowType SnowType
+  | Assume String SnowType
 

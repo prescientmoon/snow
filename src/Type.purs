@@ -76,10 +76,10 @@ printType :: SnowType -> String
 printType Unit = "Unit"
 printType (Universal var) = var
 printType (Existential var) = "?" <> var.name
-printType forall_@(Forall _ _) = "forall " <> joinWith " " variables <> "." <> printType inner
+printType forall_@(Forall _ _) = "forall " <> joinWith " " variables <> ". " <> printType inner
   where
   variables /\ inner = collectForalls forall_
-printType exists@(Exists _ _) = "exists " <> joinWith " " variables <> "." <> printType inner
+printType exists@(Exists _ _) = "exists " <> joinWith " " variables <> ". " <> printType inner
   where
   variables /\ inner = collectExistentials exists
 printType (Function from to) = parensWhen fromNeedsParens printType from <> " -> " <> parensWhen toNeedsParens printType to

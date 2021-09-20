@@ -8,7 +8,7 @@ import Effect.Aff (runAff_)
 import Effect.Class.Console (error)
 import Node.ReadLine (createConsoleInterface, noCompletion)
 import Node.ReadLine.Aff as RL
-import Snow.Repl (loop)
+import Snow.Repl (loop, runRepl)
 
 main :: Effect Unit
 main = do
@@ -18,6 +18,6 @@ main = do
         (\err -> showError err *> RL.close interface)
         (const $ RL.close interface)
     )
-    (loop { interface })
+    (runRepl { interface } loop)
   where
   showError err = error (show err)

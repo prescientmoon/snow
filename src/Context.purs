@@ -16,7 +16,6 @@ import Data.Tuple (Tuple(..), fst, snd)
 import Data.Tuple.Nested ((/\), type (/\))
 import Effect (Effect)
 import Effect.Class.Console (log, logShow)
-import Partial.Unsafe (unsafeCrashWith)
 import Run (Run, extract)
 import Run.Except (EXCEPT, runExcept, throw)
 import Run.Supply (SUPPLY, generate, runSupply)
@@ -40,15 +39,21 @@ type Context = Array ContextElement
 data CheckLogDetails
   = Checking Expr SnowType
   | Inferring Expr
+  | Inferred Expr SnowType
   | InferringCall Expr SnowType
+  | InferredCall Expr SnowType SnowType
   | Instantiating InstantiationRule Existential SnowType
   | Subtyping SnowType SnowType
+  | Solved Existential SnowType
 
 type CheckLog = Context /\ CheckLogDetails
 
 type CheckM r = Run (LOGGER CheckLog + SUPPLY Int + EXCEPT String r)
 
 --------- Helpers
+printContext :: Context -> String
+printContext = joinWith "\n" <<< map show
+
 isWellFormed :: Context -> SnowType -> Boolean
 isWellFormed ctx (Function from to) = isWellFormed ctx from && isWellFormed ctx to
 isWellFormed ctx (Forall var ty) = isWellFormed (snoc ctx (CUniversal var)) ty
@@ -64,15 +69,23 @@ getVariable target = findMap case _ of
   CDeclaration name ty | name == target -> Just ty
   _ -> Nothing
 
-solve :: forall r. Existential -> SnowType -> Context -> Run (EXCEPT String r) Context
+ensureWellFormed :: forall r. Context -> SnowType -> Run (EXCEPT String r) Unit
+ensureWellFormed context type_ = do
+  unless (isWellFormed context type_) do
+    throw $ joinWith "\n"
+      [ "A type variable probably escaped it's scope. Type"
+      , indent 4 $ show type_
+      , "is not well formed in context"
+      , indent 4 $ printContext context
+      ]
+
+solve :: forall r. Existential -> SnowType -> Context -> Run (EXCEPT String + LOGGER CheckLog r) Context
 solve target solution ctx = ctx # traverseWithIndex case _, _ of
   index, element@(CExistential existential Nothing)
     | existential.id == target.id -> do
-        if not $ isWellFormed (beforeElement element ctx) solution then
-          throw $ "A type variable probably escaped it's scope while trying to solve ?" <> target.name <> " to solution " <> show solution
-
-        else
-          pure $ CExistential existential $ Just solution
+        ensureWellFormed (beforeElement element ctx) solution
+        Logger.log Debug (ctx /\ Solved existential solution)
+        pure $ CExistential existential $ Just solution
   _, e -> pure e
 
 -- | Get the solution for an existential
@@ -213,7 +226,15 @@ inferCall ctx = wrapper case _, _ of
       (snoc ctx $ CUniversal name)
       ty
       expr
-    pure $ beforeUniversal name ctx' /\ ty
+    let ctx'' = beforeUniversal name ctx'
+    -- If this was not here,
+    -- the following example would compile
+    --  f everything
+    --  where
+    --  f :: exists something. something -> something
+    --  everything :: forall a. a
+    ensureWellFormed ctx'' ty'
+    pure $ ctx'' /\ ty'
   Existential existential, expr -> do
     exLeft <- makeExistential $ existential.name <> "-left"
     exRight <- makeExistential $ existential.name <> "-right"
@@ -231,9 +252,11 @@ inferCall ctx = wrapper case _, _ of
     pure $ Tuple ctx' right
   _, _ -> throw "Illegal application"
   where
-  wrapper f ty expr = go <$> do
+  wrapper f ty expr = do
     Logger.log Debug (ctx /\ InferringCall expr ty)
-    f (applyContext ctx ty) expr
+    ctx' /\ to <- go <$> f (applyContext ctx ty) expr
+    Logger.log Debug (ctx /\ InferredCall expr ty to)
+    pure $ ctx' /\ to
     where
     go (Tuple ctx' ty') = Tuple ctx' $ applyContext ctx' ty'
 
@@ -242,7 +265,7 @@ infer :: forall r. Context -> Expr -> CheckM r (Tuple Context SnowType)
 infer ctx = zonk case _ of
   ExprVariable name -> case getVariable name ctx of
     Just ty -> pure $ Tuple ctx ty
-    Nothing -> unsafeCrashWith "Variable not in scope"
+    Nothing -> throw "Variable not in scope"
   ExprUnit -> pure $ Tuple ctx Unit
   ExprAnnotation expr ty -> do
     -- TODO: check A is well formed
@@ -264,9 +287,11 @@ infer ctx = zonk case _ of
     Tuple ctx' tyFunction <- infer ctx function
     inferCall ctx tyFunction argument
   where
-  zonk f e = go <$> do
+  zonk f e = do
     Logger.log Debug (ctx /\ Inferring e)
-    f e
+    ctx' /\ ty <- go <$> f e
+    Logger.log Debug (ctx' /\ Inferred e ty)
+    pure $ ctx' /\ ty
     where
     go (Tuple ctx' ty) = Tuple ctx' $ applyContext ctx' ty
 
@@ -340,11 +365,25 @@ instance Show CheckLogDetails where
     [ "Inferring the type of expression"
     , indent 4 $ show expr
     ]
-  show (InferringCall expr ty) = joinWith "\n"
-    [ "Inferring the result of applying the function"
+  show (Inferred expr type_) = joinWith "\n"
+    [ "Inferred the expression"
     , indent 4 $ show expr
-    , "to an argument of type"
+    , "to have type"
+    , indent 4 $ show type_
+    ]
+  show (InferringCall expr ty) = joinWith "\n"
+    [ "Inferring the result of applying a function of type"
     , indent 4 $ show ty
+    , "to the argument"
+    , indent 4 $ show expr
+    ]
+  show (InferredCall expr ty to) = joinWith "\n"
+    [ "The result of applying a function of type"
+    , indent 4 $ show ty
+    , "to the argument"
+    , indent 4 $ show expr
+    , "has type"
+    , indent 4 $ show to
     ]
   show (Subtyping left right) = joinWith "\n"
     [ "Checking that type"
@@ -357,4 +396,10 @@ instance Show CheckLogDetails where
     , indent 4 name
     , "so it is " <> (if rule == more then "more" else "less") <> " general than type"
     , indent 4 $ show right
+    ]
+  show (Solved { name } to) = joinWith "\n"
+    [ "Solving existential"
+    , indent 4 $ "?" <> name
+    , "to type"
+    , indent 4 $ show to
     ]

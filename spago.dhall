@@ -17,6 +17,7 @@
   , "parsing"
   , "partial"
   , "prelude"
+  , "profunctor-lenses"
   , "psci-support"
   , "run"
   , "run-supply"
