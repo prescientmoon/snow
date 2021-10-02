@@ -88,10 +88,18 @@ getVariableType target = findMap case _ of
   CUniversal name ty | name == target -> Just ty
   _ -> Nothing
 
+-- | Monadic version of `getVariableType`
+getVariableTypeM :: forall r. String -> CheckM r (Maybe SnowType)
+getVariableTypeM name = get <#> getVariableType name
+
 getExistentialType :: Existential -> Context -> Maybe SnowType
 getExistentialType { id: target } = findMap case _ of
   CExistential { id } ty _ | id == target -> Just ty
   _ -> Nothing
+
+-- | Monadic version of `getExistentialType`
+getExistentialTypeM :: forall r. Existential -> CheckM r (Maybe SnowType)
+getExistentialTypeM name = get <#> getExistentialType name
 
 ensureWellFormed :: forall r. Context -> SnowType -> CheckM r Unit
 ensureWellFormed context type_ = do
