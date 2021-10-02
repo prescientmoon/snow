@@ -2,21 +2,22 @@ module Snow.Context where
 
 import Prelude
 
-import Data.Array (any, snoc, takeWhile)
+import Data.Array (any, head, snoc, takeWhile)
 import Data.Debug (class Debug, constructor, genericDebug)
 import Data.Foldable (findMap)
 import Data.Generic.Rep (class Generic)
-import Data.Maybe (Maybe(..), fromMaybe)
+import Data.Maybe (Maybe(..), isJust)
 import Data.String (joinWith)
 import Data.TraversableWithIndex (traverseWithIndex)
 import Data.Tuple.Nested ((/\), type (/\))
 import Run (Run)
 import Run.Except (EXCEPT, throw)
+import Run.State (STATE, get, modify, put)
 import Run.Supply (SUPPLY, generate)
 import Snow.Run.Logger (LOGGER, LogLevel(..))
 import Snow.Run.Logger as Logger
 import Snow.Stinrg (indent)
-import Snow.Type (Existential, SnowType(..), everywhereOnType)
+import Snow.Type (SnowType(..), Existential, everywhereOnType)
 import Type.Row (type (+))
 
 data ContextElement
@@ -38,7 +39,7 @@ data CheckLogDetails
 
 type CheckLog = Context /\ CheckLogDetails
 
-type CheckM r = Run (LOGGER CheckLog + SUPPLY Int + EXCEPT String r)
+type CheckM r = Run (LOGGER CheckLog + SUPPLY Int + STATE Context + EXCEPT String r)
 
 --------- Instantiation
 newtype InstantiationRule = InstantiationRule Boolean
@@ -48,6 +49,10 @@ less = InstantiationRule false
 
 more :: InstantiationRule
 more = InstantiationRule true
+
+---------- State helpers
+mutateContext :: forall r. (Context -> CheckM r Context) -> CheckM r Unit
+mutateContext f = get >>= f >>= put
 
 --------- Helpers
 printContext :: Context -> String
@@ -79,12 +84,12 @@ getVariableType target = findMap case _ of
   CUniversal name ty | name == target -> Just ty
   _ -> Nothing
 
-getExistentialType :: Int -> Context -> Maybe SnowType
-getExistentialType target = findMap case _ of
+getExistentialType :: Existential -> Context -> Maybe SnowType
+getExistentialType { id: target } = findMap case _ of
   CExistential { id } ty _ | id == target -> Just ty
   _ -> Nothing
 
-ensureWellFormed :: forall r. Context -> SnowType -> Run (EXCEPT String r) Unit
+ensureWellFormed :: forall r. Context -> SnowType -> CheckM r Unit
 ensureWellFormed context type_ = do
   unless (isWellFormed context type_) do
     throw $ joinWith "\n"
@@ -94,14 +99,16 @@ ensureWellFormed context type_ = do
       , indent 4 $ printContext context
       ]
 
-solve :: forall r. Existential -> SnowType -> Context -> Run (EXCEPT String + LOGGER CheckLog r) Context
-solve target solution ctx = ctx # traverseWithIndex case _, _ of
-  index, element@(CExistential existential domain Nothing)
-    | existential.id == target.id -> do
-        ensureWellFormed (beforeElement element ctx) solution
-        Logger.log Debug (ctx /\ Solved existential solution)
-        pure $ CExistential existential domain $ Just solution
-  _, e -> pure e
+solve :: forall r. Existential -> SnowType -> CheckM r Unit
+solve target solution = mutateContext \ctx ->
+  ctx # traverseWithIndex case _, _ of
+    index, element@(CExistential existential domain solved)
+      | isJust solved -> throw $ "Existential " <> target.name <> " has already been solved"
+      | existential.id == target.id -> do
+          ensureWellFormed (beforeElement element ctx) solution
+          Logger.log Debug (ctx /\ Solved existential solution)
+          pure $ CExistential existential domain $ Just solution
+    _, e -> pure e
 
 -- | Get the solution for an existential
 getSolution :: Context -> Existential -> Maybe SnowType
@@ -119,12 +126,16 @@ applyContext ctx = everywhereOnType case _ of
   ty -> ty
 
 -- | Returns true if the second param was bound before the first
-boundBefore :: Existential -> Existential -> Context -> Boolean
-boundBefore first second = fromMaybe false <<< findMap case _ of
-  CExistential e domain _
-    | e == first -> Just false
-    | e == second -> Just true
-  _ -> Nothing
+boundBefore :: forall r. Existential -> Existential -> CheckM r Unit
+boundBefore first second = get <#> findMap found >>= case _ of
+  Just true -> pure unit
+  _ -> throw $ "Variable " <> first.name <> " must be bound before " <> second.name
+  where
+  found = case _ of
+    CExistential e domain _
+      | e == first -> Just false
+      | e == second -> Just true
+    _ -> Nothing
 
 -- | Take all the elements of a context which appear before an arbitrary universal.
 beforeUniversal :: String -> Context -> Context
@@ -135,6 +146,11 @@ beforeUniversal target = takeWhile case _ of
 beforeMarker :: Existential -> Context -> Context
 beforeMarker target = takeWhile \a -> a /= CMarker target
 
+beforeExistential :: Existential -> Context -> Context
+beforeExistential { id: target } = takeWhile case _ of
+  CExistential { id } _ _ -> id == target
+  _ -> false
+
 beforeElement :: ContextElement -> Context -> Context
 beforeElement target = takeWhile \a -> a /= target
 
@@ -142,11 +158,32 @@ beforeElement target = takeWhile \a -> a /= target
 makeExistential :: forall r. String -> CheckM r Existential
 makeExistential name = generate <#> { name, id: _ }
 
+-- | Scope a computation by promising to delete all the elements past
+-- | a provided point after the computations has been run
+scoped :: forall r. ContextElement -> CheckM r ~> CheckM r
+scoped element computation = do
+  modify (flip snoc element)
+  computation <* modify (beforeElement element)
+
+-- | Same as `scoped` but works for more than 1 element at a time
+scopeMany :: forall r. Array ContextElement -> CheckM r ~> CheckM r
+scopeMany elements computation
+  | Just element <- head elements = do
+      modify (\ctx -> ctx <> elements)
+      computation <* modify (beforeElement element)
+  | otherwise = computation
+
+-- | Apply the current context onto a type
+zonk :: forall r. SnowType -> CheckM r SnowType
+zonk ty = get <#> flip applyContext ty
+
 ---------- Typeclass instances
 derive instance Eq InstantiationRule
 derive instance Generic InstantiationRule _
 instance Debug InstantiationRule where
   debug rule = if rule == less then constructor "Less" [] else constructor "More" []
+
+derive newtype instance HeytingAlgebra InstantiationRule
 
 derive instance Eq ContextElement
 derive instance Generic ContextElement _
