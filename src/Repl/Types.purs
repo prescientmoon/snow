@@ -1,10 +1,9 @@
 module Snow.Repl.Types where
 
-import Snow.Ast (Expr)
 import Snow.Type (SnowType)
 
 data Command
-  = TypeOf Expr
+  = TypeOf SnowType
   | Subsumes SnowType SnowType
   | Assume String SnowType
 

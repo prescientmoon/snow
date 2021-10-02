@@ -1,4 +1,4 @@
-module Parser (parseType, parseCommand, unsafeParseType) where
+module Snow.Parser (parseType, parseCommand, unsafeParseType) where
 
 import Prelude
 
@@ -8,13 +8,13 @@ import Data.Either (Either, fromRight)
 import Data.Foldable (foldl, foldr)
 import Data.Identity (Identity)
 import Data.List.NonEmpty as NonEmptyList
-import Data.Maybe (Maybe(..), maybe, optional)
+import Data.Maybe (maybe, optional)
+import Data.Tuple (uncurry)
 import Data.Tuple.Nested ((/\))
-import Snow.Ast (Expr(..))
 import Snow.Repl.Types (Command(..))
 import Snow.Type (SnowType(..))
 import Text.Parsing.Parser (ParseError, Parser, ParserT, fail, runParser)
-import Text.Parsing.Parser.Combinators (many1)
+import Text.Parsing.Parser.Combinators (many1, try)
 import Text.Parsing.Parser.String (class StringLike, oneOf)
 import Text.Parsing.Parser.Token (GenLanguageDef(..), GenTokenParser, LanguageDef, alphaNum, letter, makeTokenParser)
 import Undefined (undefined)
@@ -32,8 +32,8 @@ language =
     , opStart: opChars
     , opLetter: opChars
     , caseSensitive: true
-    , reservedOpNames: [ ".", "->", "\\", "::", ":" ]
-    , reservedNames: [ "Unit", "forall", "unit" ]
+    , reservedOpNames: [ ".", "->", "\\", "::", ":", "*" ]
+    , reservedNames: [ "Unit", "forall", "unit", "exists", "pi", "effect" ]
     , identStart: letter
     , identLetter: alphaNum <|> oneOf [ '_', '\'' ]
     }
@@ -42,68 +42,85 @@ tokenParser :: GenTokenParser String Identity
 tokenParser = makeTokenParser language
 
 -- | Parser for types
-parseExpression' :: Parser String Expr -> Parser String Expr
+parseExpression' :: Parser String SnowType -> Parser String SnowType
 parseExpression' expr = parseAnnotation
   where
-  { parens, identifier, reserved, reservedOp } = tokenParser
+  { parens, identifier, natural, reserved, reservedOp } = tokenParser
 
   parseAnnotation = ado
     call <- parseCall
-    type_ <- optional (reservedOp "::" *> typeParser)
-    in maybe call (ExprAnnotation call) type_
+    type_ <- optional (reservedOp "::" *> expr)
+    in maybe call (Annotation call) type_
 
   parseCall = do
-    subExpressions <- many1 nonCall
+    subExpressions <- many1 atom
     let calee = NonEmptyList.head subExpressions
     let arguments = NonEmptyList.tail subExpressions
-    pure $ foldl ExprCall calee arguments
+    pure $ foldl Application calee arguments
 
-  var = ExprVariable <$> identifier
-  unit = ExprUnit <$ reserved "unit"
-  nonCall = parens expr <|> unit <|> lambda <|> var
+  universal = Universal <$> identifier
+
+  unitExpr = ExprUnit <$ reserved "unit"
+  unitType = Unit <$ reserved "Unit"
+
+  star = do
+    explicit <- try (reservedOp "*/" $> true) <|> (reservedOp "*" $> false)
+    level <- if not explicit then pure 0 else natural
+    pure $ Star level
+
+  atom = parens expr
+    <|> star
+    <|> unitExpr
+    <|> unitType
+    <|> lambda
+    <|> parseForall
+    <|> parseExists
+    <|> parseFunction
+    <|> universal
+
   lambda = ado
     arguments <- reservedOp "\\" *> many1 identifier
     body <- reservedOp "->" *> expr
-    in foldr ExprLambda body arguments
+    in foldr Lambda body arguments
 
-parseType' :: Parser String SnowType -> Parser String SnowType
-parseType' type' = tryFunction
-  where
-  { parens, identifier, reserved, reservedOp } = tokenParser
+  ------ Type binders
+  parseFullDomain = parens do
+    name <- identifier
+    reservedOp ":"
+    domain <- expr
+    pure $ name /\ domain
 
-  typeVar = Universal <$> identifier
-  nonFunction = parens type' <|> unit <|> parseForall <|> parseExists <|> typeVar
-  unit = Unit <$ reserved "Unit"
+  parseStarDomain = identifier <#> \name -> name /\ Star 0
+  parseDomain = parseFullDomain <|> parseStarDomain
+
+  parseFunction = do
+    reserved "pi"
+    var /\ domain <- parseFullDomain <|> (expr <#> (/\) "_")
+    reservedOp "->"
+    codomain <- expr
+    pure (Pi var domain codomain)
 
   parseBinder = do
-    vars <- many1 identifier
+    vars <- many1 parseDomain
     reservedOp "."
-    ty <- type'
+    ty <- expr
     pure $ vars /\ ty
 
   parseForall = ado
     reserved "forall"
     vars /\ innerType <- parseBinder
-    in foldr Forall innerType vars
+    in foldr (uncurry Forall) innerType vars
 
   parseExists = ado
     reserved "exists"
     vars /\ innerType <- parseBinder
-    in foldr Exists innerType vars
-
-  tryFunction = ado
-    from <- nonFunction
-    to <- optional (reservedOp "->" *> type')
-    in
-      case to of
-        Just to -> Function from to
-        Nothing -> from
+    in foldr (uncurry Exists) innerType vars
 
 -- | Complete parsers
 typeParser :: Parser String SnowType
-typeParser = fix parseType'
+typeParser = expressionParser
 
-expressionParser :: Parser String Expr
+expressionParser :: Parser String SnowType
 expressionParser = fix parseExpression'
 
 commandParser :: Parser String Command

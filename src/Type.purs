@@ -5,27 +5,44 @@ import Prelude
 import Data.Debug (class Debug, genericDebug)
 import Data.Generic.Rep (class Generic)
 import Data.Identity (Identity(..))
+import Data.Maybe (Maybe(..))
 import Data.Newtype (unwrap)
 import Data.String (joinWith)
 import Data.Tuple (Tuple)
-import Data.Tuple.Nested ((/\))
+import Data.Tuple.Nested (type (/\), (/\))
 
 type Existential = { id :: Int, name :: String }
 
 data SnowType
-  = Unit
-  | Function SnowType SnowType
-  | Forall String SnowType
-  | Exists String SnowType
-  | Existential Existential
+  = Application SnowType SnowType
+  | Annotation SnowType SnowType
+
+  ------ Constant types
+  | Unit
+  | Star Int
+
+  ------ Binders
+  | Exists String SnowType SnowType
+  | Effectful SnowType SnowType
+  | Pi String SnowType SnowType
+  | Forall String SnowType SnowType
+
+  ------ Variables
+  | Unsolved Existential
   | Universal String
+
+  ------ Value-level constructrs
+  | ExprUnit
+  | Lambda String SnowType
 
 -- | Apply a monadic function on every layer of a type
 everywhereOnTypeM :: forall m. Monad m => (SnowType -> m SnowType) -> SnowType -> m SnowType
 everywhereOnTypeM f = f <=< case _ of
-  Function from to -> Function <$> (everywhereOnTypeM f from) <*> (everywhereOnTypeM f to)
-  Forall name ty -> Forall name <$> (everywhereOnTypeM f ty)
-  Exists name ty -> Exists name <$> (everywhereOnTypeM f ty)
+  Pi name from to -> Pi name <$> (everywhereOnTypeM f from) <*> (everywhereOnTypeM f to)
+  Forall name domain ty -> Forall name <$> (everywhereOnTypeM f domain) <*> (everywhereOnTypeM f ty)
+  Exists name domain ty -> Exists name <$> (everywhereOnTypeM f domain) <*> (everywhereOnTypeM f ty)
+  Effectful from to -> Effectful <$> (everywhereOnTypeM f from) <*> (everywhereOnTypeM f to)
+
   ty -> pure ty
 
 -- | Apply a function on every layer of a type
@@ -35,21 +52,29 @@ everywhereOnType f = everywhereOnTypeM (f >>> Identity) >>> unwrap
 -- | Subsitutte an existential everywhere inside a type
 substitute :: Int -> SnowType -> SnowType -> SnowType
 substitute id with = everywhereOnType case _ of
-  Existential e | e.id == id -> with
+  Unsolved e | e.id == id -> with
   ty -> ty
 
 -- | Substitute an universal everywhere inside a type
 substituteUniversal :: String -> SnowType -> SnowType -> SnowType
 substituteUniversal target with = case _ of
-  Function from to ->
-    Function
+  Pi name from to ->
+    Pi name
       (substituteUniversal target with from)
       (substituteUniversal target with to)
   Universal name | name == target -> with
-  Forall name ty | name /= target ->
-    substituteUniversal target with ty
-  Exists name ty | name /= target ->
-    substituteUniversal target with ty
+  Forall name domain ty | name /= target ->
+    Forall name
+      (substituteUniversal target with domain)
+      (substituteUniversal target with ty)
+  Exists name domain ty | name /= target ->
+    Exists name
+      (substituteUniversal target with domain)
+      (substituteUniversal target with ty)
+  Effectful effect ty ->
+    Effectful
+      (substituteUniversal target with effect)
+      (substituteUniversal target with ty)
   ty -> ty
 
 -- | Checks if a type contains an exitential
@@ -57,10 +82,11 @@ occurs :: Existential -> SnowType -> Boolean
 occurs target = go
   where
   go = case _ of
-    Function from to -> go from || go to
-    Forall _ ty -> go ty
-    Exists _ ty -> go ty
-    Existential existential -> target.id == existential.id
+    Pi name from to -> go from || go to
+    Forall _ domain ty -> go domain || go ty
+    Exists _ domain ty -> go domain || go ty
+    Effectful effect ty -> go effect || go ty
+    Unsolved existential -> target.id == existential.id
     _ -> false
 
 --------- Typeclass instances
@@ -74,34 +100,84 @@ instance Show SnowType where
 ---------- Pretty printing
 printType :: SnowType -> String
 printType Unit = "Unit"
+printType (Star level) = if level == 0 then "*" else "*/" <> show level
+printType ExprUnit = "unit"
 printType (Universal var) = var
-printType (Existential var) = "?" <> var.name
-printType forall_@(Forall _ _) = "forall " <> joinWith " " variables <> ". " <> printType inner
+printType (Unsolved var) = "?" <> var.name
+printType (Application left right) = parensWhen leftNeedsParens printType left <> " " <> parensWhen rightNeedsParens printType right
   where
-  variables /\ inner = collectForalls forall_
-printType exists@(Exists _ _) = "exists " <> joinWith " " variables <> ". " <> printType inner
-  where
-  variables /\ inner = collectExistentials exists
-printType (Function from to) = parensWhen fromNeedsParens printType from <> " -> " <> parensWhen toNeedsParens printType to
-  where
-  fromNeedsParens = case _ of
-    Function _ _ -> true
-    Forall _ _ -> true
+  leftNeedsParens = case _ of
+    Pi _ _ _ -> true
+    Forall _ _ _ -> true
+    Exists _ _ _ -> true
+    Effectful _ _ -> true
+    Lambda _ _ -> true
+    Annotation _ _ -> true
     _ -> false
 
-  toNeedsParens = const false
-
-collectForalls :: SnowType -> Tuple (Array String) SnowType
-collectForalls (Forall var inner) = ([ var ] <> innermostVars) /\ innermostType
+  rightNeedsParens = case _ of
+    Pi _ _ _ -> true
+    Application _ _ -> true
+    Annotation _ _ -> true
+    _ -> false
+printType effect@(Effectful _ _) = "with " <> case effects of
+  [ effect ] -> printType effect <> ". " <> printType inner
+  _ -> "(" <> joinWith ", " (effects <#> printType) <> "). " <> printType inner
   where
-  innermostVars /\ innermostType = collectForalls inner
-collectForalls other = [] /\ other
-
-collectExistentials :: SnowType -> Tuple (Array String) SnowType
-collectExistentials (Exists var inner) = ([ var ] <> innermostVars) /\ innermostType
+  effects /\ inner = collectEffects effect
+printType forall_@(Forall _ _ _) = "forall " <> joinWith " " (variables <#> printBinder) <> ". " <> printType inner
   where
-  innermostVars /\ innermostType = collectForalls inner
-collectExistentials other = [] /\ other
+  variables /\ inner = collectForalls forall_
+printType exists@(Exists _ _ _) = "exists " <> joinWith " " (variables <#> printBinder) <> ". " <> printType inner
+  where
+  variables /\ inner = collectExistentials exists
+printType (Annotation expr ty) = parensWhen needsParens printType expr <> " :: " <> show ty
+  where
+  needsParens = case _ of
+    Annotation _ _ -> true
+    Lambda _ _ -> true
+    Forall _ _ _ -> true
+    Exists _ _ _ -> true
+    Effectful _ _ -> true
+    _ -> false
+printType lam@(Lambda _ _) = "\\" <> joinWith " " arguments <> " -> " <> printType body
+  where
+  arguments /\ body = collectLambdas lam
+printType (Pi name from to) = "pi " <> printBinder (name /\ from) <> " -> " <> printType to
+
+printBinder :: String /\ SnowType -> String
+printBinder (name /\ domain) =
+  if domain == Star 0 then
+    name
+  else
+    "(" <> name <> ": " <> printType domain <> ")"
+
+collectMany :: forall t. (SnowType -> Maybe (t /\ SnowType)) -> SnowType -> Array t /\ SnowType
+collectMany extract type_ = case extract type_ of
+  Just (var /\ inner) -> ([ var ] <> innermostVars) /\ innermostType
+    where
+    innermostVars /\ innermostType = collectMany extract inner
+  Nothing -> [] /\ type_
+
+collectEffects :: SnowType -> Array SnowType /\ SnowType
+collectEffects = collectMany case _ of
+  Effectful effect inner -> Just (effect /\ inner)
+  _ -> Nothing
+
+collectForalls :: SnowType -> Tuple (Array (String /\ SnowType)) SnowType
+collectForalls = collectMany case _ of
+  Forall var domain inner -> Just ((var /\ domain) /\ inner)
+  _ -> Nothing
+
+collectExistentials :: SnowType -> Tuple (Array (String /\ SnowType)) SnowType
+collectExistentials = collectMany case _ of
+  Exists var domain inner -> Just ((var /\ domain) /\ inner)
+  _ -> Nothing
+
+collectLambdas :: SnowType -> Array String /\ SnowType
+collectLambdas = collectMany case _ of
+  Lambda argument body -> Just (argument /\ body)
+  _ -> Nothing
 
 parensWhen :: forall a. (a -> Boolean) -> (a -> String) -> a -> String
 parensWhen predicate print toPrint = if predicate toPrint then "(" <> print toPrint <> ")" else print toPrint
