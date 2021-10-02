@@ -4,16 +4,20 @@ import Prelude
 
 import Data.Array (any, head, snoc, takeWhile)
 import Data.Debug (class Debug, constructor, genericDebug)
+import Data.Either (Either(..))
 import Data.Foldable (findMap)
 import Data.Generic.Rep (class Generic)
 import Data.Maybe (Maybe(..), isJust)
 import Data.String (joinWith)
 import Data.TraversableWithIndex (traverseWithIndex)
 import Data.Tuple.Nested ((/\), type (/\))
-import Run (Run)
-import Run.Except (EXCEPT, throw)
-import Run.State (STATE, get, modify, put)
-import Run.Supply (SUPPLY, generate)
+import Effect (Effect)
+import Effect.Class.Console (log, logShow)
+import Run (Run, extract)
+import Run.Except (EXCEPT, runExcept, throw)
+import Run.State (STATE, evalState, get, modify, put)
+import Run.Supply (SUPPLY, generate, runSupply)
+import Run.Writer (runWriter)
 import Snow.Run.Logger (LOGGER, LogLevel(..))
 import Snow.Run.Logger as Logger
 import Snow.Stinrg (indent)
@@ -140,16 +144,16 @@ boundBefore first second = get <#> findMap found >>= case _ of
 -- | Take all the elements of a context which appear before an arbitrary universal.
 beforeUniversal :: String -> Context -> Context
 beforeUniversal target = takeWhile case _ of
-  CUniversal name _ -> name == target
-  _ -> false
+  CUniversal name _ -> name /= target
+  _ -> true
 
 beforeMarker :: Existential -> Context -> Context
 beforeMarker target = takeWhile \a -> a /= CMarker target
 
 beforeExistential :: Existential -> Context -> Context
 beforeExistential { id: target } = takeWhile case _ of
-  CExistential { id } _ _ -> id == target
-  _ -> false
+  CExistential { id } _ _ -> id /= target
+  _ -> true
 
 beforeElement :: ContextElement -> Context -> Context
 beforeElement target = takeWhile \a -> a /= target
@@ -170,12 +174,23 @@ scopeMany :: forall r. Array ContextElement -> CheckM r ~> CheckM r
 scopeMany elements computation
   | Just element <- head elements = do
       modify (\ctx -> ctx <> elements)
-      computation <* modify (beforeElement element)
+      result <- computation
+      modify (beforeElement element)
+      pure result
   | otherwise = computation
 
 -- | Apply the current context onto a type
 zonk :: forall r. SnowType -> CheckM r SnowType
 zonk ty = get <#> flip applyContext ty
+
+---------- Running checks
+runCheckMWithConsole :: forall a. Show a => Context -> CheckM () a -> Effect Unit
+runCheckMWithConsole context computation = do
+  let logs /\ result = extract $ evalState context $ runWriter $ runExcept $ runSupply ((+) 1) 0 computation
+  case result of
+    Left err -> log err
+    Right success -> do
+      logShow success
 
 ---------- Typeclass instances
 derive instance Eq InstantiationRule

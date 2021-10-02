@@ -6,11 +6,12 @@ import Array (insertManyBefore)
 import Data.Function (on)
 import Data.Maybe (Maybe(..))
 import Data.Tuple.Nested ((/\))
+import Debug (traceM)
 import Run.Except (throw)
 import Run.State (get, gets, modify)
-import Snow.Context (CheckLogDetails(..), CheckM, ContextElement(..), InstantiationRule, beforeExistential, boundBefore, ensureWellFormed, less, makeExistential, more, scopeMany, scoped, solve, zonk)
+import Snow.Context (CheckLogDetails(..), CheckM, ContextElement(..), InstantiationRule, beforeExistential, boundBefore, ensureWellFormed, less, makeExistential, more, printContext, scopeMany, scoped, solve, zonk)
 import Snow.Run.Logger as Logger
-import Snow.Type (Existential, SnowType(..), substituteUniversal)
+import Snow.Type (Existential, SnowType(..), occurs, substituteUniversal)
 
 -- | Instantiate an existential such that it's either less or more general than a type
 instantiate :: forall r. InstantiationRule -> Existential -> SnowType -> CheckM r Unit
@@ -61,3 +62,55 @@ instantiate rule existential ty = do
 
   -- LOGGING:
   get >>= \res -> Logger.log Logger.Debug $ res /\ Instantiating rule existential ty
+
+-- | Check a type is at least as general as another.
+subtype :: forall r. SnowType -> SnowType -> CheckM r Unit
+subtype left right = do
+  get >>= \ctx -> Logger.log Logger.Debug (ctx /\ Subtyping left right)
+  case left, right of
+    -- forall-left
+    Forall name domain codomain,
+    right -> do
+      existential <- makeExistential name
+      let codomain' = substituteUniversal name (Unsolved existential) codomain
+      scopeMany [ CMarker existential, CExistential existential domain Nothing ] do
+        subtype codomain' right
+    -- forall-right
+    left,
+    Forall name domain codomain ->
+      scoped (CUniversal name domain) do
+        subtype left codomain
+    -- exists-left
+    Exists _ _ _,
+    right -> throw "unimplemented"
+    left, Exists _ _ _ -> throw "unimplemented"
+    -- functions
+    Pi nameLeft fromLeft toLeft,
+    Pi nameRight fromRight toRight -> do
+      subtype fromRight fromLeft
+      existential <- makeExistential nameLeft
+      scopeMany [ CUniversal nameRight fromRight, CMarker existential, CExistential existential fromLeft Nothing ] do
+        toLeft <- zonk $ substituteUniversal nameLeft (Unsolved existential) toLeft
+        toRight <- zonk toRight
+        ctx <- get
+        traceM $ printContext ctx
+        subtype toLeft toRight
+    -- Equality cases
+    Universal a,
+    Universal b | a == b -> do
+      context <- get
+      ensureWellFormed context $ Universal a
+    Unsolved a, Unsolved b | a == b -> pure unit
+    Unit, Unit -> pure unit
+    Star a, Star b
+      | a == b -> pure unit
+      | otherwise -> throw $ "Different * levels: " <> show a <> " and " <> show b
+    -- TODO: better error messages for circular types
+    -- Instantiation cases
+
+    Unsolved existential,
+    right | not (occurs existential right) -> instantiate less existential right
+    left, Unsolved existential | not (occurs existential left) -> instantiate more existential left
+    -- Failure
+    t1,
+    t2 -> throw $ "Unsolvable subtyping relation between " <> show t1 <> " and " <> show t2
