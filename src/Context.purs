@@ -12,10 +12,10 @@ import Data.String (joinWith)
 import Data.TraversableWithIndex (traverseWithIndex)
 import Data.Tuple.Nested ((/\), type (/\))
 import Effect (Effect)
-import Effect.Class.Console (log, logShow)
+import Effect.Class.Console (log)
 import Run (Run, extract)
 import Run.Except (EXCEPT, runExcept, throw)
-import Run.State (STATE, evalState, get, modify, put)
+import Run.State (STATE, get, modify, put, runState)
 import Run.Supply (SUPPLY, generate, runSupply)
 import Run.Writer (runWriter)
 import Snow.Run.Logger (LOGGER, LogLevel(..))
@@ -194,11 +194,14 @@ zonk ty = get <#> flip applyContext ty
 ---------- Running checks
 runCheckMWithConsole :: forall a. Show a => Context -> CheckM () a -> Effect Unit
 runCheckMWithConsole context computation = do
-  let logs /\ result = extract $ evalState context $ runWriter $ runExcept $ runSupply ((+) 1) 0 computation
+  let state /\ logs /\ result = extract $ runState context $ runWriter $ runExcept $ runSupply ((+) 1) 0 computation
   case result of
     Left err -> log err
     Right success -> do
-      logShow success
+      log "Context:"
+      log $ indent 4 $ printContext state
+      log "Result:"
+      log $ indent 4 $ show success
 
 ---------- Typeclass instances
 derive instance Eq InstantiationRule
@@ -214,8 +217,8 @@ instance Debug ContextElement where
   debug = genericDebug
 instance Show ContextElement where
   show (CExistential { name } domain ty) = case ty of
-    Nothing -> "?" <> (name <> " :: " <> show ty)
-    Just ty -> "?" <> ("(" <> name <> " :: " <> show ty <> ")") <> " = " <> show ty
+    Nothing -> "?" <> (name <> " :: " <> show domain)
+    Just ty -> "?" <> ("(" <> name <> " :: " <> show domain <> ")") <> " = " <> show ty
   show (CUniversal uni ty) = uni <> " :: " <> show ty
   show (CMarker { name }) = ">>> " <> name
 
